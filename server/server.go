@@ -13,8 +13,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nlopes/slack"
+	"github.com/robfig/cron"
 	"github.com/yhat/scrape"
 	"golang.org/x/net/html"
 
@@ -142,58 +144,55 @@ func parseMenu(root *html.Node) (*MenuResp, error) {
 	return &parsed, nil
 }
 
-func menuHandler(muncherySession string, api *slack.Client) func(w http.ResponseWriter, r *http.Request) {
-	return func(w http.ResponseWriter, r *http.Request) {
-		root, err := getMenu(muncherySession)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+func menuPost(muncherySession string, api *slack.Client, channelID string) error {
+	root, err := getMenu(muncherySession)
+	if err != nil {
+		return err
+	}
+
+	parsed, err := parseMenu(root)
+	if err != nil {
+		return err
+	}
+
+	for _, section := range parsed.Menu.MealServices.Dinner.Sections {
+		// nobody orders drinks
+		if section.Name == "Drinks" {
+			continue
 		}
 
-		parsed, err := parseMenu(root)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		for _, section := range parsed.Menu.MealServices.Dinner.Sections {
-			// nobody orders drinks
-			if section.Name == "Drinks" {
-				continue
-			}
-
-			attachments := make([]slack.Attachment, 0)
-			for _, dish := range section.Items {
-				if dish.Availability == "available" {
-					attachments = append(attachments, slack.Attachment{
-						Title:    dish.Name,
-						ThumbURL: dish.Photos.MenuSquare,
-						Fields: []slack.AttachmentField{
-							slack.AttachmentField{
-								Title: "ID",
-								Value: strconv.Itoa(dish.ID),
-								Short: true,
-							},
-							slack.AttachmentField{
-								Title: "Price",
-								Value: "$" + strconv.Itoa(dish.Price.Dollars) + "." + strconv.Itoa(dish.Price.Cents),
-								Short: true,
-							},
+		attachments := make([]slack.Attachment, 0)
+		for _, dish := range section.Items {
+			if dish.Availability == "available" {
+				attachments = append(attachments, slack.Attachment{
+					Title:    dish.Name,
+					ThumbURL: dish.Photos.MenuSquare,
+					Fields: []slack.AttachmentField{
+						slack.AttachmentField{
+							Title: "ID",
+							Value: strconv.Itoa(dish.ID),
+							Short: true,
 						},
-						TitleLink: "https://munchery.com/menus/sf/#/0/dinner/" + dish.URL + "/info",
-					})
-				}
+						slack.AttachmentField{
+							Title: "Price",
+							Value: "$" + strconv.Itoa(dish.Price.Dollars) + "." + strconv.Itoa(dish.Price.Cents),
+							Short: true,
+						},
+					},
+					TitleLink: "https://munchery.com/menus/sf/#/0/dinner/" + dish.URL + "/info",
+				})
 			}
+		}
 
-			params := slack.PostMessageParameters{Attachments: attachments}
-			_, _, err = api.PostMessage("munchbot-testing", section.Name, params)
-			if err != nil {
-				log.Printf("Error sending dishes: %+v", err)
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+		params := slack.PostMessageParameters{Attachments: attachments}
+		_, _, err = api.PostMessage(channelID, section.Name, params)
+		if err != nil {
+			log.Printf("Error sending dishes: %+v", err)
+			return err
 		}
 	}
+
+	return nil
 }
 
 func ChannelExists(channelName string) bool {
@@ -288,7 +287,7 @@ func addToBasket(muncherySession string, ids []int) error {
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			// TODO update with get menu command
-			return fmt.Errorf("Call to add to cart was unsuccessful. Please refresh the menu or hit up munchery.com")
+			return fmt.Errorf("Call to add to cart was unsuccessful. Please refresh the menu using `@munchbot menu` or hit up munchery.com.")
 		}
 
 	}
@@ -419,14 +418,25 @@ func checkout(muncherySession string) error {
 	return nil
 }
 
+func RegisterCronJob(muncherySession string, api *slack.Client) {
+	c := cron.New()
+	// gonna have to figure out timezones
+	c.AddFunc("0 0 21 * * MON-FRI", func() {
+		// TODO somehow query registered users
+		channelIDs := []string{}
+		for _, channelID := range channelIDs {
+			menuPost(muncherySession, api, channelID)
+		}
+	})
+}
+
 func Run() {
 	muncherySession := os.Getenv("MUNCHERY_SESSION")
 	api := ConnectToSlack()
 	RegisterChannels(api)
 	atMB := GetAtMunchBotId(api)
-	go Respond(api, atMB, muncherySession)
-	http.HandleFunc("/menu", menuHandler(muncherySession, api))
-	http.ListenAndServe(":8080", nil)
+	RegisterCronJob(muncherySession, api)
+	Respond(api, atMB, muncherySession)
 }
 
 func ConnectToSlack() *slack.Client {
