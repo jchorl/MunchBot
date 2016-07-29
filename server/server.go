@@ -29,6 +29,8 @@ const (
 	CartDataId  = "cart_data"
 )
 
+var RegisteredChannels []string
+
 func ConnectToPG(dbName string) *sql.DB {
 	db, err := sql.Open("postgres", "postgres://munch:munch@"+os.Getenv("DB_PORT_5432_TCP_ADDR")+"/usertokens")
 	if err != nil {
@@ -179,6 +181,23 @@ func menuHandler(muncherySession string, api *slack.Client) func(w http.Response
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+	}
+}
+
+func ChannelExists(channelName string) bool {
+	for _, channel := range RegisteredChannels {
+		if channelName == channel {
+			return true
+		}
+	}
+	return false
+}
+
+func RegisterChannels(api *slack.Client) {
+	RegisteredChannels = make([]string, 0)
+	IMs, _ := api.GetIMChannels()
+	for _, IM := range IMs {
+		RegisteredChannels = append(RegisteredChannels, IM.ID)
 	}
 }
 
@@ -381,6 +400,7 @@ func checkout(muncherySession string) error {
 func Run() {
 	muncherySession := os.Getenv("MUNCHERY_SESSION")
 	api := ConnectToSlack()
+	RegisterChannels(api)
 	SendTestMessage(api, "#intern-hackathon", "Just listening in...")
 	atMB := GetAtMunchBotId(api)
 	go Respond(api, atMB)
@@ -426,9 +446,21 @@ func Respond(api *slack.Client, atBot string) {
 				fmt.Printf("Message: %v\n", ev)
 				if strings.Contains(ev.Text, atBot) {
 					switch {
-					case strings.Contains(ev.Text, "Order"):
-						params := slack.PostMessageParameters{}
-						api.PostMessage(ev.Channel, "Ordering right now...", params)
+					case strings.Contains(strings.ToLower(ev.Text), "order"):
+						if !ChannelExists(ev.Channel) {
+							params := slack.PostMessageParameters{}
+							api.PostMessage(ev.Channel, "Please order in a direct message ;)", params)
+						} else {
+							params := slack.PostMessageParameters{}
+							ids := MakeOrder(ev.Text)
+							addToBasket(muncherySessionID, ids)
+							// processOrder()
+							if order == nil {
+								api.PostMessage(ev.Channel, "Sorry, didn't understand your order, format is '1, 2, 4' ;)", params)
+								break
+							}
+							api.PostMessage(ev.Channel, "Ordering right now...", params)
+						}
 					case strings.Contains(ev.Text, "love"):
 						params := slack.PostMessageParameters{}
 						api.PostMessage(ev.Channel, "Awww, thanks. Love you too, dawg.", params)
@@ -445,6 +477,20 @@ func Respond(api *slack.Client, atBot string) {
 			}
 		}
 	}
+}
+
+func MakeOrder(order string) []int {
+	orders := strings.Split(order, ",")
+	var orderNums []int
+	for _, order := range orders {
+		i, err := strconv.Atoi(order)
+		if err != nil {
+			log.Printf("Error processing your order... try again: %+v", err)
+			return nil
+		}
+		orderNums = append(orderNums, i)
+	}
+	return orderNums
 }
 
 func prepMuncheryReq(req *http.Request, muncherySession string) {
