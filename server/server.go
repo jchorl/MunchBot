@@ -1,8 +1,8 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +18,48 @@ const (
 	MenuUrl    = "https://munchery.com/menus/sf/"
 	MenuClass  = "menu-page-data"
 )
+
+type MenuResp struct {
+	Menu Menu `json:"menu"`
+}
+
+type Menu struct {
+	MealServices MealService `json:"meal_services"`
+}
+
+type MealService struct {
+	Dinner Meal `json:"dinner"`
+}
+
+type Meal struct {
+	Sections []Section `json:"sections"`
+}
+
+type Section struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Items       []Item `json:"items"`
+}
+
+type Item struct {
+	Availability string `json:"availability"`
+	ID           int    `json:"id"`
+	Name         string `json:"name"`
+	Subtitle     string `json:"subtitle"`
+	Description  string `json:"description"`
+	Price        Price  `json:"price"`
+	Photos       Photos `json:"photos"`
+	URL          string `json:"url"`
+}
+
+type Price struct {
+	Dollars int `json:"dollars,string"`
+	Cents   int `json:"cents,string"`
+}
+
+type Photos struct {
+	MenuSquare string `json:"menu_square"`
+}
 
 func getMenu(w http.ResponseWriter, r *http.Request) {
 	req, err := http.NewRequest("GET", MenuUrl, nil)
@@ -53,7 +95,15 @@ func getMenu(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("%s", scrape.Text(menu))
+	parsed := MenuResp{}
+	err = json.Unmarshal([]byte(scrape.Text(menu)), &parsed)
+	if err != nil {
+		log.Printf("Error parsing body: %+v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("%+v", parsed)
 }
 
 func Run() {
