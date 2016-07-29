@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -27,6 +28,49 @@ func ConnectToPG(dbName string) *sql.DB {
 		log.Fatal(err)
 	}
 	return db
+}
+
+type MenuResp struct {
+	Menu Menu `json:"menu"`
+}
+
+type Menu struct {
+	MealServices MealService `json:"meal_services"`
+}
+
+type MealService struct {
+	Dinner Meal `json:"dinner"`
+}
+
+type Meal struct {
+	Sections []Section `json:"sections"`
+}
+
+type Section struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Items       []Item `json:"items"`
+}
+
+type Item struct {
+	Availability string `json:"availability"`
+	ID           int    `json:"id"`
+	Name         string `json:"name"`
+	Subtitle     string `json:"subtitle"`
+	Description  string `json:"description"`
+	Price        Price  `json:"price"`
+	Photos       Photos `json:"photos"`
+	URL          string `json:"url"`
+}
+
+type Price struct {
+	Dollars int `json:"dollars,string"`
+	Cents   int `json:"cents,string"`
+}
+
+type Photos struct {
+	MenuSquare string `json:"menu_square"`
+>>>>>>> 506a5dbe2e9323464194775128b775ab0b95aba1
 }
 
 func getMenu(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +107,15 @@ func getMenu(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("%s", scrape.Text(menu))
+	parsed := MenuResp{}
+	err = json.Unmarshal([]byte(scrape.Text(menu)), &parsed)
+	if err != nil {
+		log.Printf("Error parsing body: %+v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("%+v", parsed)
 }
 
 func Run() {
