@@ -46,6 +46,7 @@ type CartResponse struct {
 type Cart struct {
 	ID         int                    `json:"id"`
 	ItemsByDay map[string]interface{} `json:"items_by_day"`
+	Total      float64
 }
 
 type ItemByDay struct {
@@ -374,6 +375,17 @@ func checkout(muncherySession string) error {
 			log.Printf("Error reading updatedCartRC: %+v", updatedCartRC)
 			return err
 		}
+	}
+
+	// before final checkout, ensure cost is <$20
+	parsedCart := CartResponse{}
+	err = json.Unmarshal(updatedCart, &parsedCart)
+	if err != nil {
+		log.Printf("Could not unmarshal cart: %+v", err)
+	}
+
+	if parsedCart.Cart.Total > 20 {
+		return fmt.Errorf("Cart total is >$20. Please fix it so you don't get charged.")
 	}
 
 	req, err = http.NewRequest("POST", CartUrl+strconv.Itoa(parsed.Cart.ID)+"/checkout", bytes.NewBuffer(updatedCart))
