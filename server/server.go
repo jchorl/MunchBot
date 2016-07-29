@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -20,10 +22,11 @@ import (
 )
 
 const (
-	MenuUrl      = "https://munchery.com/menus/sf/"
-	AddToCardUrl = "https://munchery.com/api/cart/"
-	MenuClass    = "menu-page-data"
-	CartDataId   = "cart_data"
+	MenuUrl     = "https://munchery.com/menus/sf/"
+	CartUrl     = "https://munchery.com/api/cart/"
+	CheckoutUrl = "https://munchery.com/checkout/"
+	MenuClass   = "menu-page-data"
+	CartDataId  = "cart_data"
 )
 
 func ConnectToPG(dbName string) *sql.DB {
@@ -39,7 +42,12 @@ type CartResponse struct {
 }
 
 type Cart struct {
-	ID int `json:"id"`
+	ID         int                    `json:"id"`
+	ItemsByDay map[string]interface{} `json:"items_by_day"`
+}
+
+type ItemByDay struct {
+	Date string `json:"date"`
 }
 
 type AddToCartReq struct {
@@ -231,7 +239,7 @@ func addToBasket(muncherySession string, ids []int) error {
 			return err
 		}
 
-		req, err := http.NewRequest("POST", AddToCardUrl+strconv.Itoa(parsed.Cart.ID)+"/add", bytes.NewBuffer(bts))
+		req, err := http.NewRequest("POST", CartUrl+"add", bytes.NewBuffer(bts))
 		if err != nil {
 			log.Printf("Error creating post to add to cart: %+v", err)
 			return err
@@ -246,13 +254,127 @@ func addToBasket(muncherySession string, ids []int) error {
 			return err
 		}
 
+		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			// TODO update with get menu command
+			io.Copy(os.Stdout, resp.Body)
 			return fmt.Errorf("Call to add to cart was unsuccessful. Please refresh the menu or hit up munchery.com")
 		}
 
-		defer resp.Body.Close()
 	}
+	return nil
+}
+
+func setDeliveryWindow(muncherySession string, cartID int, date string) (io.ReadCloser, error) {
+	req, err := http.NewRequest("POST", CartUrl+strconv.Itoa(cartID)+"/delivery_windows", bytes.NewBufferString(fmt.Sprintf("{\"delivery_windows\": {\"%s\": \"793\"}}", date)))
+	if err != nil {
+		return nil, err
+	}
+
+	prepMuncheryReq(req, muncherySession)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := http.DefaultClient
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Body, nil
+}
+
+func checkout(muncherySession string) error {
+	req, err := http.NewRequest("GET", CheckoutUrl, nil)
+	if err != nil {
+		return err
+	}
+
+	prepMuncheryReq(req, muncherySession)
+
+	client := http.DefaultClient
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+
+	root, err := html.Parse(resp.Body)
+	if err != nil {
+		log.Printf("Error parsing body for cart data: %+v", err)
+		return err
+	}
+
+	cart, ok := scrape.Find(root, scrape.ById(CartDataId))
+	if !ok {
+		log.Printf("Could not scrape cart id properly")
+		return err
+	}
+
+	log.Printf(scrape.Text(cart))
+	parsed := CartResponse{}
+	err = json.Unmarshal([]byte(scrape.Text(cart)), &parsed)
+	if err != nil {
+		log.Printf("Error parsing cart: %+v", err)
+		return err
+	}
+
+	dates := make([]string, 0)
+	// ItemsByDay is a map from string -> interface
+	// as long as the key is not ordered_days, we can consider the struct an ItemByDay
+	for k, v := range parsed.Cart.ItemsByDay {
+		if k != "ordered_days" {
+			ibd, ok := v.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("Could not cast key, value to map string->interface: %s, %+v", k, v)
+			}
+
+			date, ok := ibd["date"].(string)
+			if !ok {
+				return fmt.Errorf("Could not cast itemByDay date to string: %+v", ibd["date"])
+			}
+
+			dates = append(dates, date)
+		}
+	}
+
+	updatedCart := []byte(scrape.Text(cart))
+
+	// set delivery window
+	// TODO handle delivernow
+	for _, date := range dates {
+		log.Printf("Setting delivery window for %s", date)
+		updatedCartRC, err := setDeliveryWindow(muncherySession, parsed.Cart.ID, date)
+		if err != nil {
+			return err
+		}
+
+		defer updatedCartRC.Close()
+		updatedCart, err = ioutil.ReadAll(updatedCartRC)
+		if err != nil {
+			log.Printf("Error reading updatedCartRC: %+v", updatedCartRC)
+			return err
+		}
+	}
+
+	req, err = http.NewRequest("POST", CartUrl+strconv.Itoa(parsed.Cart.ID)+"/checkout", bytes.NewBuffer(updatedCart))
+	if err != nil {
+		return err
+	}
+
+	prepMuncheryReq(req, muncherySession)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = client.Do(req)
+	if err != nil {
+		log.Printf("Error ordering from Munchery: %+v", err)
+		return err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Response was not ok. Please go to Munchery and figure out what's going on.")
+	}
+
 	return nil
 }
 
@@ -260,7 +382,6 @@ func Run() {
 	muncherySession := os.Getenv("MUNCHERY_SESSION")
 	api := ConnectToSlack()
 	SendTestMessage(api, "#intern-hackathon", "Just listening in...")
-	//Respond(api)
 	atMB := GetAtMunchBotId(api)
 	go Respond(api, atMB)
 	http.HandleFunc("/menu", menuHandler(muncherySession, api))
