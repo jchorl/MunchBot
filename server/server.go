@@ -70,7 +70,6 @@ type Price struct {
 
 type Photos struct {
 	MenuSquare string `json:"menu_square"`
->>>>>>> 506a5dbe2e9323464194775128b775ab0b95aba1
 }
 
 func getMenu(w http.ResponseWriter, r *http.Request) {
