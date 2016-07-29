@@ -22,6 +22,8 @@ const (
 	MenuClass = "menu-page-data"
 )
 
+var RegisteredChannels []string
+
 func ConnectToPG(dbName string) *sql.DB {
 	db, err := sql.Open("postgres", "postgres://munch:munch@"+os.Getenv("DB_PORT_5432_TCP_ADDR")+"/usertokens")
 	if err != nil {
@@ -144,8 +146,26 @@ func menuHandler(muncherySession string, api *slack.Client) func(w http.Response
 	}
 }
 
+func ChannelExists(channelName string) bool {
+	for _, channel := range RegisteredChannels {
+		if channelName == channel {
+			return true
+		}
+	}
+	return false
+}
+
+func RegisterChannels(api *slack.Client) {
+	RegisteredChannels = make([]string, 0)
+	IMs, _ := api.GetIMChannels()
+	for _, IM := range IMs {
+		RegisteredChannels = append(RegisteredChannels, IM.ID)
+	}
+}
+
 func Run() {
 	api := ConnectToSlack()
+	RegisterChannels(api)
 	SendTestMessage(api, "#intern-hackathon", "Just listening in...")
 	//Respond(api)
 	atMB := GetAtMunchBotId(api)
@@ -193,9 +213,14 @@ func Respond(api *slack.Client, atBot string) {
 				fmt.Printf("Message: %v\n", ev)
 				if strings.Contains(ev.Text, atBot) {
 					switch {
-					case strings.Contains(ev.Text, "Order"):
-						params := slack.PostMessageParameters{}
-						api.PostMessage(ev.Channel, "Ordering right now...", params)
+					case strings.Contains(strings.ToLower(ev.Text), "order"):
+						if !ChannelExists(ev.Channel) {
+							params := slack.PostMessageParameters{}
+							api.PostMessage(ev.Channel, "Please order in a direct message ;)", params)
+						} else {
+							params := slack.PostMessageParameters{}
+							api.PostMessage(ev.Channel, "Ordering right now...", params)
+						}
 					case strings.Contains(ev.Text, "love"):
 						params := slack.PostMessageParameters{}
 						api.PostMessage(ev.Channel, "Awww, thanks. Love you too, dawg.", params)
