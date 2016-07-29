@@ -11,9 +11,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/nlopes/slack"
 	"github.com/robfig/cron"
@@ -528,4 +528,13 @@ func prepMuncheryReq(req *http.Request, muncherySession string) {
 	req.AddCookie(&http.Cookie{Name: "_session_id", Value: muncherySession})
 	req.Header.Add("Accept", "*/*")
 	req.Header.Add("User-Agent", "curl/7.43.0")
+}
+
+func muncherySessionFromCookie(cookie string) (string, error) {
+	var sessionRegexp *regexp.Regexp = regexp.MustCompile(`_session_id=(.*?);`)
+	match := sessionRegexp.FindStringSubmatch(cookie)
+	if len(match) < 2 {
+		return "", fmt.Errorf("Not enough matches")
+	}
+	return match[1], nil
 }
