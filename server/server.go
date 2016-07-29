@@ -156,31 +156,42 @@ func menuHandler(muncherySession string, api *slack.Client) func(w http.Response
 			return
 		}
 
-		var mainDishes Section
 		for _, section := range parsed.Menu.MealServices.Dinner.Sections {
-			if section.Name == "Main Dishes" {
-				mainDishes = section
-				break
+			// nobody orders drinks
+			if section.Name == "Drinks" {
+				continue
 			}
-		}
 
-		attachments := make([]slack.Attachment, 0)
-		for _, dish := range mainDishes.Items {
-			if dish.Availability == "available" {
-				attachments = append(attachments, slack.Attachment{
-					Title:    dish.Name + ": ($" + strconv.Itoa(dish.Price.Dollars) + "." + strconv.Itoa(dish.Price.Cents) + ")",
-					ThumbURL: dish.Photos.MenuSquare,
-					Text:     dish.Description,
-				})
+			attachments := make([]slack.Attachment, 0)
+			for _, dish := range section.Items {
+				if dish.Availability == "available" {
+					attachments = append(attachments, slack.Attachment{
+						Title:    dish.Name,
+						ThumbURL: dish.Photos.MenuSquare,
+						Fields: []slack.AttachmentField{
+							slack.AttachmentField{
+								Title: "ID",
+								Value: strconv.Itoa(dish.ID),
+								Short: true,
+							},
+							slack.AttachmentField{
+								Title: "Price",
+								Value: "$" + strconv.Itoa(dish.Price.Dollars) + "." + strconv.Itoa(dish.Price.Cents),
+								Short: true,
+							},
+						},
+						TitleLink: "https://munchery.com/menus/sf/#/0/dinner/" + dish.URL + "/info",
+					})
+				}
 			}
-		}
 
-		params := slack.PostMessageParameters{Text: "Dinner Options", Attachments: attachments}
-		_, _, err = api.PostMessage("intern-hackathon", "", params)
-		if err != nil {
-			log.Printf("Error sending dishes: %+v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			params := slack.PostMessageParameters{Attachments: attachments}
+			_, _, err = api.PostMessage("munchbot-testing", section.Name, params)
+			if err != nil {
+				log.Printf("Error sending dishes: %+v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 	}
 }
@@ -277,7 +288,6 @@ func addToBasket(muncherySession string, ids []int) error {
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			// TODO update with get menu command
-			io.Copy(os.Stdout, resp.Body)
 			return fmt.Errorf("Call to add to cart was unsuccessful. Please refresh the menu or hit up munchery.com")
 		}
 
@@ -413,9 +423,8 @@ func Run() {
 	muncherySession := os.Getenv("MUNCHERY_SESSION")
 	api := ConnectToSlack()
 	RegisterChannels(api)
-	SendTestMessage(api, "#intern-hackathon", "Just listening in...")
 	atMB := GetAtMunchBotId(api)
-	go Respond(api, atMB)
+	go Respond(api, atMB, muncherySession)
 	http.HandleFunc("/menu", menuHandler(muncherySession, api))
 	http.ListenAndServe(":8080", nil)
 }
@@ -447,7 +456,7 @@ func SendTestMessage(api *slack.Client, channelName string, messageText string) 
 	fmt.Printf("Message successfully sent to channel %s at %s", channelID, timestamp)
 }
 
-func Respond(api *slack.Client, atBot string) {
+func Respond(api *slack.Client, atBot string, muncherySessionID string) {
 	rtm := api.NewRTM()
 	go rtm.ManageConnection()
 	for {
@@ -463,15 +472,15 @@ func Respond(api *slack.Client, atBot string) {
 							params := slack.PostMessageParameters{}
 							api.PostMessage(ev.Channel, "Please order in a direct message ;)", params)
 						} else {
-							params := slack.PostMessageParameters{}
+							_ = slack.PostMessageParameters{}
 							ids := MakeOrder(ev.Text)
 							addToBasket(muncherySessionID, ids)
 							// processOrder()
-							if order == nil {
-								api.PostMessage(ev.Channel, "Sorry, didn't understand your order, format is '1, 2, 4' ;)", params)
-								break
-							}
-							api.PostMessage(ev.Channel, "Ordering right now...", params)
+							// if order == nil {
+							// 	api.PostMessage(ev.Channel, "Sorry, didn't understand your order, format is '1, 2, 4' ;)", params)
+							// 	break
+							// }
+							// api.PostMessage(ev.Channel, "Ordering right now...", params)
 						}
 					case strings.Contains(ev.Text, "love"):
 						params := slack.PostMessageParameters{}
