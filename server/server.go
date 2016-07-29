@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/nlopes/slack"
@@ -14,9 +15,8 @@ import (
 )
 
 const (
-	session_id = ""
-	MenuUrl    = "https://munchery.com/menus/sf/"
-	MenuClass  = "menu-page-data"
+	MenuUrl   = "https://munchery.com/menus/sf/"
+	MenuClass = "menu-page-data"
 )
 
 type MenuResp struct {
@@ -61,59 +61,87 @@ type Photos struct {
 	MenuSquare string `json:"menu_square"`
 }
 
-func getMenu(w http.ResponseWriter, r *http.Request) {
-	req, err := http.NewRequest("GET", MenuUrl, nil)
-	if err != nil {
-		log.Printf("Error creating request to get menu: %+v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+func menuHandler(muncherySession string, api *slack.Client) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		req, err := http.NewRequest("GET", MenuUrl, nil)
+		if err != nil {
+			log.Printf("Error creating request to get menu: %+v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 
-	req.AddCookie(&http.Cookie{Name: "_session_id", Value: session_id})
-	req.Header.Add("Accept", "*/*")
-	req.Header.Add("User-Agent", "curl/7.43.0")
+		req.AddCookie(&http.Cookie{Name: "_session_id", Value: muncherySession})
+		req.Header.Add("Accept", "*/*")
+		req.Header.Add("User-Agent", "curl/7.43.0")
 
-	client := http.DefaultClient
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("Error making request to get menu: %+v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-	root, err := html.Parse(resp.Body)
-	if err != nil {
-		log.Printf("Error parsing body: %+v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+		client := http.DefaultClient
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("Error making request to get menu: %+v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer resp.Body.Close()
+		root, err := html.Parse(resp.Body)
+		if err != nil {
+			log.Printf("Error parsing body: %+v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 
-	menu, ok := scrape.Find(root, scrape.ByClass(MenuClass))
-	if !ok {
-		log.Printf("Could not scrape properly")
-		http.Error(w, "Could not scrape properly", http.StatusInternalServerError)
-		return
-	}
+		menu, ok := scrape.Find(root, scrape.ByClass(MenuClass))
+		if !ok {
+			log.Printf("Could not scrape properly")
+			http.Error(w, "Could not scrape properly", http.StatusInternalServerError)
+			return
+		}
 
-	parsed := MenuResp{}
-	err = json.Unmarshal([]byte(scrape.Text(menu)), &parsed)
-	if err != nil {
-		log.Printf("Error parsing body: %+v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+		parsed := MenuResp{}
+		err = json.Unmarshal([]byte(scrape.Text(menu)), &parsed)
+		if err != nil {
+			log.Printf("Error parsing body: %+v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 
-	log.Printf("%+v", parsed)
+		var mainDishes Section
+		for _, section := range parsed.Menu.MealServices.Dinner.Sections {
+			if section.Name == "Main Dishes" {
+				mainDishes = section
+				break
+			}
+		}
+
+		attachments := make([]slack.Attachment, 0)
+		for _, dish := range mainDishes.Items {
+			if dish.Availability == "available" {
+				attachments = append(attachments, slack.Attachment{
+					Title:    dish.Name + ": ($" + strconv.Itoa(dish.Price.Dollars) + "." + strconv.Itoa(dish.Price.Cents) + ")",
+					ThumbURL: dish.Photos.MenuSquare,
+					Text:     dish.Description,
+				})
+			}
+		}
+
+		params := slack.PostMessageParameters{Text: "Dinner Options", Attachments: attachments}
+		_, _, err = api.PostMessage("intern-hackathon", "", params)
+		if err != nil {
+			log.Printf("Error sending dishes: %+v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 }
 
 func Run() {
-	http.HandleFunc("/menu", getMenu)
-	go http.ListenAndServe(":8080", nil)
 	api := ConnectToSlack()
 	SendTestMessage(api, "#intern-hackathon", "Just listening in...")
 	//Respond(api)
 	atMB := GetAtMunchBotId(api)
-	Respond(api, atMB)
+	go Respond(api, atMB)
+	muncherySession := os.Getenv("MUNCHERY_SESSION")
+	http.HandleFunc("/menu", menuHandler(muncherySession, api))
+	http.ListenAndServe(":8080", nil)
 }
 
 func ConnectToSlack() *slack.Client {
