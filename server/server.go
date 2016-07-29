@@ -34,11 +34,32 @@ const (
 var RegisteredChannels []string
 
 func ConnectToPG(dbName string) *sql.DB {
-	db, err := sql.Open("postgres", "postgres://munch:munch@"+os.Getenv("DB_PORT_5432_TCP_ADDR")+"/usertokens")
+	db, err := sql.Open("postgres", "postgres://munch:munch@"+os.Getenv("DB_PORT_5432_TCP_ADDR")+"/usertokens?sslmode=disable")
 	if err != nil {
 		log.Fatal(err)
 	}
 	return db
+}
+
+func SetupTable(db *sql.DB, tableName string) {
+	_, err := db.Exec("CREATE TABLE users (channel text PRIMARY KEY, session text)")
+	if err != nil {
+		log.Printf("Error inserting into DB: %+v", err)
+		return
+	}
+}
+
+func RegisterUserToDB(db *sql.DB, user *User) {
+	_, err := db.Exec("INSERT INTO users(channel,session) VALUES($1,$2) ON CONFLICT (channel) DO UPDATE SET (channel, session) = ($1, $2)", user.ChannelID, user.MuncherySession)
+	if err != nil {
+		log.Printf("Error inserting into DB: %+v", err)
+		return
+	}
+}
+
+type User struct {
+	ChannelID       string
+	MuncherySession string
 }
 
 type CartResponse struct {
@@ -434,6 +455,15 @@ func Run() {
 	muncherySession := os.Getenv("MUNCHERY_SESSION")
 	api := ConnectToSlack()
 	RegisterChannels(api)
+	pg := ConnectToPG("usertokens")
+	SetupTable(pg, "users")
+	SendTestMessage(api, "#intern-hackathon", "Just listening in...")
+	user := new(User)
+	user.ChannelID = "aaa"
+	user.MuncherySession = ""
+	RegisterUserToDB(pg, user)
+	user.MuncherySession = "got-it"
+	RegisterUserToDB(pg, user)
 	atMB := GetAtMunchBotId(api)
 	RegisterCronJob(muncherySession, api)
 	Respond(api, atMB, muncherySession)
@@ -484,8 +514,14 @@ func Respond(api *slack.Client, atBot string, muncherySessionID string) {
 						} else {
 							_ = slack.PostMessageParameters{}
 							ids := MakeOrder(ev.Text)
+							muncherySessionID := os.Getenv("MUNCHERY_SESSION")
 							addToBasket(muncherySessionID, ids)
 							// processOrder()
+							if ids == nil {
+								api.PostMessage(ev.Channel, "Sorry, didn't understand your order, format is '1, 2, 4' ;)", params)
+								break
+							}
+							api.PostMessage(ev.Channel, "Ordering right now...", params)
 							// if order == nil {
 							// 	api.PostMessage(ev.Channel, "Sorry, didn't understand your order, format is '1, 2, 4' ;)", params)
 							// 	break
