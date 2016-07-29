@@ -331,6 +331,13 @@ func Respond(api *slack.Client, atBot string) {
 							api.PostMessage(ev.Channel, "Please order in a direct message ;)", params)
 						} else {
 							params := slack.PostMessageParameters{}
+							ids := MakeOrder(ev.Text)
+							addToBasket(muncherySessionID, ids)
+							// processOrder()
+							if order == nil {
+								api.PostMessage(ev.Channel, "Sorry, didn't understand your order, format is '1, 2, 4' ;)", params)
+								break
+							}
 							api.PostMessage(ev.Channel, "Ordering right now...", params)
 						}
 					case strings.Contains(ev.Text, "love"):
@@ -349,6 +356,20 @@ func Respond(api *slack.Client, atBot string) {
 			}
 		}
 	}
+}
+
+func MakeOrder(order string) []int {
+	orders := strings.Split(order, ",")
+	var orderNums []int
+	for _, order := range orders {
+		i, err := strconv.Atoi(order)
+		if err != nil {
+			log.Printf("Error processing your order... try again: %+v", err)
+			return nil
+		}
+		orderNums = append(orderNums, i)
+	}
+	return orderNums
 }
 
 func prepMuncheryReq(req *http.Request, muncherySession string) {
