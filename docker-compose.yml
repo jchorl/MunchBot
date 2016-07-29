@@ -25,4 +25,5 @@ services:
       - POSTGRES_PASSWORD=munch
       - POSTGRES_USER=munch
       - SLACK_TOKEN=${SLACK_TOKEN}
+      - MUNCHERY_SESSION=${MUNCHERY_SESSION}
     restart: always
