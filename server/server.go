@@ -152,7 +152,17 @@ func Respond(api *slack.Client, atBot string) {
 			case *slack.MessageEvent:
 				fmt.Printf("Message: %v\n", ev)
 				if strings.Contains(ev.Text, atBot) {
-					/// HOW TO RESPOND
+					switch {
+					case strings.Contains(ev.Text, "Order"):
+						params := slack.PostMessageParameters{}
+						api.PostMessage(ev.Channel, "Ordering right now...", params)
+					case strings.Contains(ev.Text, "love"):
+						params := slack.PostMessageParameters{}
+						api.PostMessage(ev.Channel, "Awww, thanks. Love you too, dawg.", params)
+					default:
+						params := slack.PostMessageParameters{}
+						api.PostMessage(ev.Channel, "Come again? Didn't catch that", params)
+					}
 				}
 			case *slack.RTMError:
 				fmt.Printf("Error: %s\n", ev.Error())
