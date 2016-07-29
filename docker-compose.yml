@@ -1,0 +1,28 @@
+version: '2'
+services:
+  db:
+    image: postgres
+    expose:
+      - "5432"
+    ports:
+       - "5432:5432"
+    environment:
+      - POSTGRES_PASSWORD=munch
+      - POSTGRES_USER=munch
+      - POSTGRES_DB=usertokens
+    restart: always
+
+  munch-server:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      - db
+    links:
+      - db
+    environment:
+      - DB_PORT_5432_TCP_ADDR=db
+      - POSTGRES_PASSWORD=munch
+      - POSTGRES_USER=munch
+      - SLACK_TOKEN=${SLACK_TOKEN}
+    restart: always

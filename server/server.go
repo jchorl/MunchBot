@@ -1,8 +1,8 @@
 package server
 
 import (
+	"database/sql"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -11,6 +11,8 @@ import (
 	"github.com/nlopes/slack"
 	"github.com/yhat/scrape"
 	"golang.org/x/net/html"
+
+	_ "github.com/lib/pq"
 )
 
 const (
@@ -18,6 +20,14 @@ const (
 	MenuUrl    = "https://munchery.com/menus/sf/"
 	MenuClass  = "menu-page-data"
 )
+
+func ConnectToPG(dbName string) *sql.DB {
+	db, err := sql.Open("postgres", "postgres://munch:munch@"+os.Getenv("DB_PORT_5432_TCP_ADDR")+"/usertokens")
+	if err != nil {
+		log.Fatal(err)
+	}
+	return db
+}
 
 func getMenu(w http.ResponseWriter, r *http.Request) {
 	req, err := http.NewRequest("GET", MenuUrl, nil)
@@ -68,6 +78,7 @@ func Run() {
 
 func ConnectToSlack() *slack.Client {
 	token := os.Getenv("SLACK_TOKEN")
+	fmt.Println(token)
 	api := slack.New(token)
 	return api
 }
