@@ -6,13 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nlopes/slack"
+	"github.com/robfig/cron"
 	"github.com/yhat/scrape"
 	"golang.org/x/net/html"
 
@@ -20,10 +24,11 @@ import (
 )
 
 const (
-	MenuUrl      = "https://munchery.com/menus/sf/"
-	AddToCardUrl = "https://munchery.com/api/cart/"
-	MenuClass    = "menu-page-data"
-	CartDataId   = "cart_data"
+	MenuUrl     = "https://munchery.com/menus/sf/"
+	CartUrl     = "https://munchery.com/api/cart/"
+	CheckoutUrl = "https://munchery.com/checkout/"
+	MenuClass   = "menu-page-data"
+	CartDataId  = "cart_data"
 )
 
 var RegisteredChannels []string
@@ -62,7 +67,13 @@ type CartResponse struct {
 }
 
 type Cart struct {
-	ID int `json:"id"`
+	ID         int                    `json:"id"`
+	ItemsByDay map[string]interface{} `json:"items_by_day"`
+	Total      float64
+}
+
+type ItemByDay struct {
+	Date string `json:"date"`
 }
 
 type AddToCartReq struct {
@@ -154,47 +165,55 @@ func parseMenu(root *html.Node) (*MenuResp, error) {
 	return &parsed, nil
 }
 
-func menuHandler(muncherySession string, api *slack.Client) func(w http.ResponseWriter, r *http.Request) {
-	return func(w http.ResponseWriter, r *http.Request) {
-		root, err := getMenu(muncherySession)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+func menuPost(muncherySession string, api *slack.Client, channelID string) error {
+	root, err := getMenu(muncherySession)
+	if err != nil {
+		return err
+	}
 
-		parsed, err := parseMenu(root)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+	parsed, err := parseMenu(root)
+	if err != nil {
+		return err
+	}
 
-		var mainDishes Section
-		for _, section := range parsed.Menu.MealServices.Dinner.Sections {
-			if section.Name == "Main Dishes" {
-				mainDishes = section
-				break
-			}
+	for _, section := range parsed.Menu.MealServices.Dinner.Sections {
+		// nobody orders drinks
+		if section.Name == "Drinks" {
+			continue
 		}
 
 		attachments := make([]slack.Attachment, 0)
-		for _, dish := range mainDishes.Items {
+		for _, dish := range section.Items {
 			if dish.Availability == "available" {
 				attachments = append(attachments, slack.Attachment{
-					Title:    dish.Name + ": ($" + strconv.Itoa(dish.Price.Dollars) + "." + strconv.Itoa(dish.Price.Cents) + ")",
+					Title:    dish.Name,
 					ThumbURL: dish.Photos.MenuSquare,
-					Text:     dish.Description,
+					Fields: []slack.AttachmentField{
+						slack.AttachmentField{
+							Title: "ID",
+							Value: strconv.Itoa(dish.ID),
+							Short: true,
+						},
+						slack.AttachmentField{
+							Title: "Price",
+							Value: "$" + strconv.Itoa(dish.Price.Dollars) + "." + strconv.Itoa(dish.Price.Cents),
+							Short: true,
+						},
+					},
+					TitleLink: "https://munchery.com/menus/sf/#/0/dinner/" + dish.URL + "/info",
 				})
 			}
 		}
 
-		params := slack.PostMessageParameters{Text: "Dinner Options", Attachments: attachments}
-		_, _, err = api.PostMessage("intern-hackathon", "", params)
+		params := slack.PostMessageParameters{Attachments: attachments}
+		_, _, err = api.PostMessage(channelID, section.Name, params)
 		if err != nil {
 			log.Printf("Error sending dishes: %+v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			return err
 		}
 	}
+
+	return nil
 }
 
 func ChannelExists(channelName string) bool {
@@ -271,7 +290,7 @@ func addToBasket(muncherySession string, ids []int) error {
 			return err
 		}
 
-		req, err := http.NewRequest("POST", AddToCardUrl+strconv.Itoa(parsed.Cart.ID)+"/add", bytes.NewBuffer(bts))
+		req, err := http.NewRequest("POST", CartUrl+"add", bytes.NewBuffer(bts))
 		if err != nil {
 			log.Printf("Error creating post to add to cart: %+v", err)
 			return err
@@ -286,14 +305,150 @@ func addToBasket(muncherySession string, ids []int) error {
 			return err
 		}
 
+		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			// TODO update with get menu command
-			return fmt.Errorf("Call to add to cart was unsuccessful. Please refresh the menu or hit up munchery.com")
+			return fmt.Errorf("Call to add to cart was unsuccessful. Please refresh the menu using `@munchbot menu` or hit up munchery.com.")
 		}
 
-		defer resp.Body.Close()
 	}
 	return nil
+}
+
+func setDeliveryWindow(muncherySession string, cartID int, date string) (io.ReadCloser, error) {
+	req, err := http.NewRequest("POST", CartUrl+strconv.Itoa(cartID)+"/delivery_windows", bytes.NewBufferString(fmt.Sprintf("{\"delivery_windows\": {\"%s\": \"793\"}}", date)))
+	if err != nil {
+		return nil, err
+	}
+
+	prepMuncheryReq(req, muncherySession)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := http.DefaultClient
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Body, nil
+}
+
+func checkout(muncherySession string) error {
+	req, err := http.NewRequest("GET", CheckoutUrl, nil)
+	if err != nil {
+		return err
+	}
+
+	prepMuncheryReq(req, muncherySession)
+
+	client := http.DefaultClient
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+
+	root, err := html.Parse(resp.Body)
+	if err != nil {
+		log.Printf("Error parsing body for cart data: %+v", err)
+		return err
+	}
+
+	cart, ok := scrape.Find(root, scrape.ById(CartDataId))
+	if !ok {
+		log.Printf("Could not scrape cart id properly")
+		return err
+	}
+
+	log.Printf(scrape.Text(cart))
+	parsed := CartResponse{}
+	err = json.Unmarshal([]byte(scrape.Text(cart)), &parsed)
+	if err != nil {
+		log.Printf("Error parsing cart: %+v", err)
+		return err
+	}
+
+	dates := make([]string, 0)
+	// ItemsByDay is a map from string -> interface
+	// as long as the key is not ordered_days, we can consider the struct an ItemByDay
+	for k, v := range parsed.Cart.ItemsByDay {
+		if k != "ordered_days" {
+			ibd, ok := v.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("Could not cast key, value to map string->interface: %s, %+v", k, v)
+			}
+
+			date, ok := ibd["date"].(string)
+			if !ok {
+				return fmt.Errorf("Could not cast itemByDay date to string: %+v", ibd["date"])
+			}
+
+			dates = append(dates, date)
+		}
+	}
+
+	updatedCart := []byte(scrape.Text(cart))
+
+	// set delivery window
+	// TODO handle delivernow
+	for _, date := range dates {
+		log.Printf("Setting delivery window for %s", date)
+		updatedCartRC, err := setDeliveryWindow(muncherySession, parsed.Cart.ID, date)
+		if err != nil {
+			return err
+		}
+
+		defer updatedCartRC.Close()
+		updatedCart, err = ioutil.ReadAll(updatedCartRC)
+		if err != nil {
+			log.Printf("Error reading updatedCartRC: %+v", updatedCartRC)
+			return err
+		}
+	}
+
+	// before final checkout, ensure cost is <$20
+	parsedCart := CartResponse{}
+	err = json.Unmarshal(updatedCart, &parsedCart)
+	if err != nil {
+		log.Printf("Could not unmarshal cart: %+v", err)
+	}
+
+	if parsedCart.Cart.Total > 20 {
+		return fmt.Errorf("Cart total is >$20. Please fix it so you don't get charged.")
+	}
+
+	req, err = http.NewRequest("POST", CartUrl+strconv.Itoa(parsed.Cart.ID)+"/checkout", bytes.NewBuffer(updatedCart))
+	if err != nil {
+		return err
+	}
+
+	prepMuncheryReq(req, muncherySession)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = client.Do(req)
+	if err != nil {
+		log.Printf("Error ordering from Munchery: %+v", err)
+		return err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Response was not ok. Please go to Munchery and figure out what's going on.")
+	}
+
+	return nil
+}
+
+func RegisterCronJob(muncherySession string, api *slack.Client) {
+	c := cron.New()
+	// gonna have to figure out timezones
+	c.AddFunc("0 0 21 * * MON-FRI", func() {
+		// TODO somehow query registered users
+		channelIDs := []string{}
+		for _, channelID := range channelIDs {
+			menuPost(muncherySession, api, channelID)
+		}
+	})
 }
 
 func Run() {
@@ -309,11 +464,9 @@ func Run() {
 	RegisterUserToDB(pg, user)
 	user.MuncherySession = "got-it"
 	RegisterUserToDB(pg, user)
-	//Respond(api)
 	atMB := GetAtMunchBotId(api)
-	go Respond(api, atMB)
-	http.HandleFunc("/menu", menuHandler(muncherySession, api))
-	http.ListenAndServe(":8080", nil)
+	RegisterCronJob(muncherySession, api)
+	Respond(api, atMB, muncherySession)
 }
 
 func ConnectToSlack() *slack.Client {
@@ -343,7 +496,7 @@ func SendTestMessage(api *slack.Client, channelName string, messageText string) 
 	fmt.Printf("Message successfully sent to channel %s at %s", channelID, timestamp)
 }
 
-func Respond(api *slack.Client, atBot string) {
+func Respond(api *slack.Client, atBot string, muncherySessionID string) {
 	rtm := api.NewRTM()
 	go rtm.ManageConnection()
 	for {
@@ -359,7 +512,7 @@ func Respond(api *slack.Client, atBot string) {
 							params := slack.PostMessageParameters{}
 							api.PostMessage(ev.Channel, "Please order in a direct message ;)", params)
 						} else {
-							params := slack.PostMessageParameters{}
+							_ = slack.PostMessageParameters{}
 							ids := MakeOrder(ev.Text)
 							muncherySessionID := os.Getenv("MUNCHERY_SESSION")
 							addToBasket(muncherySessionID, ids)
@@ -369,6 +522,11 @@ func Respond(api *slack.Client, atBot string) {
 								break
 							}
 							api.PostMessage(ev.Channel, "Ordering right now...", params)
+							// if order == nil {
+							// 	api.PostMessage(ev.Channel, "Sorry, didn't understand your order, format is '1, 2, 4' ;)", params)
+							// 	break
+							// }
+							// api.PostMessage(ev.Channel, "Ordering right now...", params)
 						}
 					case strings.Contains(ev.Text, "love"):
 						params := slack.PostMessageParameters{}
