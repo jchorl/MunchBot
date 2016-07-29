@@ -18,5 +18,7 @@ wait:
 
 run_binary:
 	/go/bin/munchbot
-	
+
 compose_run: wait pg_start drop_db create_db run_binary
+
+compose_no_db_run: run_binary
