@@ -61,11 +61,25 @@ func RegisterUserToDB(db *sql.DB, user *User) {
 func GetUser(db *sql.DB, channelID string) *User {
 	var session string
 	row := db.QueryRow("SELECT session FROM users WHERE channel = $1", channelID)
-	row.Scan(&session)
+	err := row.Scan(&session)
+	if err != nil {
+		return nil
+	}
 	user := new(User)
 	user.ChannelID = channelID
 	user.MuncherySession = session
 	return user
+}
+
+func GetUsers(db *sql.DB, api *slack.Client) (users []*User) {
+	IMs, _ := api.GetIMChannels()
+	for _, IM := range IMs {
+		user := GetUser(db, IM.ID)
+		if user != nil {
+			users = append(users, user)
+		}
+	}
+	return users
 }
 
 type User struct {
@@ -478,16 +492,19 @@ func checkout(muncherySession string) error {
 	return nil
 }
 
-func RegisterCronJob(muncherySession string, api *slack.Client) {
+func RegisterCronJob(api *slack.Client, db *sql.DB) {
 	c := cron.New()
 	// gonna have to figure out timezones
 	c.AddFunc("0 0 21 * * MON-FRI", func() {
-		// TODO somehow query registered users
-		channelIDs := []string{}
-		for _, channelID := range channelIDs {
-			menuPost(muncherySession, api, channelID)
+
+		fmt.Println("Running the cron job")
+
+		users := GetUsers(db, api)
+		for _, user := range users {
+			menuPost(user.MuncherySession, api, user.ChannelID)
 		}
 	})
+	c.Start()
 }
 
 func Run() {
@@ -498,7 +515,7 @@ func Run() {
 	SetupTable(pg, "users")
 	SendTestMessage(api, "#intern-hackathon", "Just listening in...")
 	atMB := GetAtMunchBotId(api)
-	//RegisterCronJob(muncherySession, api)
+	RegisterCronJob(api, pg)
 	Respond(api, atMB)
 }
 
@@ -557,14 +574,14 @@ func Respond(api *slack.Client, atBot string) {
 						if !ChannelExists(ev.Channel) {
 							api.PostMessage(ev.Channel, "Please speak with `@munchbot` in your direct message channel with `@munchbot`", params)
 						} else {
-							ids := ParseOrder(ev.Text)
-							if ids == nil {
+							ids, parseError := ParseOrder(ev.Text)
+							if ids == nil || parseError {
 								api.PostMessage(ev.Channel, "Sorry, didn't understand your order, format is `@munchbot order 1, 2, 4`", params)
 							} else {
-								api.PostMessage(ev.Channel, "Perfect, registering you with `@munchbot` -- to make an order type `@munchbot menu` followed by `@munchbot order {menu item ids separated by comma}`", params)
+								api.PostMessage(ev.Channel, "Hey we registered your order. It should arrive at around 6pm... sending you a confirmation email!", params)
 								user := GetUser(pg, ev.Channel)
 								addToBasket(user.MuncherySession, ids)
-								// processOrder()
+								checkout(user.MuncherySession)
 							}
 						}
 
@@ -629,18 +646,22 @@ func ParseRegistration(messageBody string, api *slack.Client, channel string) (s
 	return token, false
 }
 
-func ParseOrder(order string) []int {
-	orders := strings.Split(order, ",")
+func ParseOrder(order string) ([]int, bool) {
+	orders := strings.Split(order, " ")
 	var orderNums []int
-	for _, order := range orders {
-		i, err := strconv.Atoi(order)
-		if err != nil {
-			log.Printf("Error processing your order... try again: %+v", err)
-			return nil
+	for j, order := range orders {
+		if j <= 1 {
+
+		} else {
+			order = strings.Replace(order, ",", "", -1)
+			i, err := strconv.Atoi(order)
+			if err != nil {
+				return nil, true
+			}
+			orderNums = append(orderNums, i)
 		}
-		orderNums = append(orderNums, i)
 	}
-	return orderNums
+	return orderNums, false
 }
 
 func prepMuncheryReq(req *http.Request, muncherySession string) {
