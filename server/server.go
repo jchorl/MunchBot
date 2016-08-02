@@ -155,7 +155,6 @@ func checkConnection(muncherySession string) bool {
 	}
 
 	prepMuncheryReq(req, muncherySession)
-	fmt.Println(muncherySession)
 
 	client := http.DefaultClient
 	resp, err := client.Do(req)
@@ -445,7 +444,6 @@ func checkout(muncherySession string) error {
 	// set delivery window
 	// TODO handle delivernow
 	for _, date := range dates {
-		log.Printf("Setting delivery window for %s", date)
 		updatedCartRC, err := setDeliveryWindow(muncherySession, parsed.Cart.ID, date)
 		if err != nil {
 			return err
@@ -494,15 +492,15 @@ func checkout(muncherySession string) error {
 func RegisterCronJob(api *slack.Client, db *sql.DB) {
 	c := cron.New()
 	// gonna have to figure out timezones
-	c.AddFunc("0 0 21 * * MON-FRI", func() {
-		fmt.Println("Running the cron job")
-
-		users := GetUsers(db, api)
-		for _, user := range users {
-			go menuPost(user.MuncherySession, api, user.ChannelID)
-		}
-	})
+	c.AddFunc("0 0 21 * * MON-FRI", func() { runCronPost(api, db) })
 	c.Start()
+}
+
+func runCronPost(api *slack.Client, db *sql.DB) {
+	users := GetUsers(db, api)
+	for _, user := range users {
+		go menuPost(user.MuncherySession, api, user.ChannelID)
+	}
 }
 
 func Run() {
@@ -514,12 +512,17 @@ func Run() {
 	SendTestMessage(api, "#intern-hackathon", "Just listening in...")
 	atMB := GetAtMunchBotId(api)
 	RegisterCronJob(api, pg)
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		runCronPost(api, pg)
+	})
+	go http.ListenAndServe(":8080", nil)
+
 	Respond(api, atMB)
 }
 
 func ConnectToSlack() *slack.Client {
 	token := os.Getenv("SLACK_TOKEN")
-	fmt.Println(token)
 	api := slack.New(token)
 	return api
 }
@@ -589,7 +592,6 @@ func Respond(api *slack.Client, atBot string) {
 							params := slack.PostMessageParameters{}
 							api.PostMessage(ev.Channel, "You must register in the private channel with @munchbot", params)
 						} else {
-							fmt.Println("about to parse registration")
 							muncherySessionID, skip := ParseRegistration(ev.Text, api, ev.Channel) // TODO
 							if skip {
 								api.PostMessage(ev.Channel, "Sorry, the munchery token `"+muncherySessionID+"` was not valid", params)
@@ -624,7 +626,6 @@ func Respond(api *slack.Client, atBot string) {
 
 func ParseRegistration(messageBody string, api *slack.Client, channel string) (string, bool) {
 	params := slack.PostMessageParameters{}
-	fmt.Println("in parse registration")
 	registrationText := strings.Split(messageBody, " ")
 	if len(registrationText) < 3 {
 		api.PostMessage(channel, "Looks like you didn't get the format right... to register type `@munchbot register {MUNCHERY_COOKIE}", params)
@@ -640,7 +641,6 @@ func ParseRegistration(messageBody string, api *slack.Client, channel string) (s
 			token = token + strings
 		}
 	}
-	fmt.Println(token)
 	return token, false
 }
 
