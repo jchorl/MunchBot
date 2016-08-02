@@ -557,7 +557,7 @@ func Respond(api *slack.Client, atBot string) {
 			case *slack.MessageEvent:
 				RegisterChannels(api) //switch to change to a more efficient version
 				params := slack.PostMessageParameters{}
-				if strings.Contains(ev.Text, atBot) && ev.Msg.BotID == "" {
+				if ev.Msg.BotID == "" {
 					switch {
 
 					/* --------------- MENU CONVERSATION ---------------*/
@@ -566,8 +566,12 @@ func Respond(api *slack.Client, atBot string) {
 							api.PostMessage(ev.Channel, "Please speak with `@munchbot` in your direct message channel with `@munchbot`", params)
 						} else {
 							user := GetUser(pg, ev.Channel)
-							api.PostMessage(ev.Channel, "Hey! Here's the menu:", params)
-							menuPost(user.MuncherySession, api, ev.Channel)
+							if user == nil {
+								api.PostMessage(ev.Channel, "Hi, to use `@munchbot` type `register {munchery_cookie}` then `menu` to see the Munchery Menu of the day, followed by `order {menu item ids separated by comma}`", params)
+							} else {
+								api.PostMessage(ev.Channel, "Hey! Here's the menu:", params)
+								menuPost(user.MuncherySession, api, ev.Channel)
+							}
 						}
 
 					/* --------------- ORDER CONVERSATION ---------------*/
@@ -577,7 +581,7 @@ func Respond(api *slack.Client, atBot string) {
 						} else {
 							ids, parseError := ParseOrder(ev.Text)
 							if ids == nil || parseError {
-								api.PostMessage(ev.Channel, "Sorry, didn't understand your order, format is `@munchbot order 1, 2, 4`", params)
+								api.PostMessage(ev.Channel, "Sorry, didn't understand your order, format is `order 1, 2, 4`", params)
 							} else {
 								api.PostMessage(ev.Channel, "Hey we registered your order. It should arrive at around 6pm... sending you a confirmation email!", params)
 								user := GetUser(pg, ev.Channel)
@@ -600,7 +604,7 @@ func Respond(api *slack.Client, atBot string) {
 							if !checkConnection(muncherySessionID) {
 								api.PostMessage(ev.Channel, "Sorry, the munchery token `"+muncherySessionID+"` was not valid", params)
 							} else {
-								api.PostMessage(ev.Channel, "Perfect, registering you with @munchbot -- to make an order type `@munchbot menu` or `@munchbot order`", params)
+								api.PostMessage(ev.Channel, "Perfect, registering you with @munchbot -- to make an order type `menu` or `order`", params)
 								user := new(User)
 								user.ChannelID = ev.Channel
 								user.MuncherySession = muncherySessionID
@@ -610,8 +614,13 @@ func Respond(api *slack.Client, atBot string) {
 
 					/*  ------------------ NONE OF THE ABOVE ---------------- */
 					default:
-						params := slack.PostMessageParameters{}
-						api.PostMessage(ev.Channel, "Hi, to use `@munchbot` type `@munchbot register {munchery_cookie}` then `@munchbot menu` to see the Munchery Menu of the day, followed by `@munchbot order {menu item ids separated by comma}`", params)
+						if !ChannelExists(ev.Channel) {
+							params := slack.PostMessageParameters{}
+							api.PostMessage(ev.Channel, "You must register in the private channel with @munchbot", params)
+						} else {
+							params := slack.PostMessageParameters{}
+							api.PostMessage(ev.Channel, "Hi, to use `@munchbot` type `register {munchery_cookie}` then `menu` to see the Munchery Menu of the day, followed by `order {menu item ids separated by comma}`", params)
+						}
 					}
 				}
 			case *slack.RTMError:
@@ -627,17 +636,17 @@ func Respond(api *slack.Client, atBot string) {
 func ParseRegistration(messageBody string, api *slack.Client, channel string) (string, bool) {
 	params := slack.PostMessageParameters{}
 	registrationText := strings.Split(messageBody, " ")
-	if len(registrationText) < 3 {
+	if len(registrationText) < 2 {
 		api.PostMessage(channel, "Looks like you didn't get the format right... to register type `@munchbot register {MUNCHERY_COOKIE}", params)
 		return "", false
 	}
-	if strings.ToLower(registrationText[1]) != "register" {
+	if strings.ToLower(registrationText[0]) != "register" {
 		api.PostMessage(channel, "Looks like you didn't get the format right... to register type `@munchbot register {MUNCHERY_COOKIE}", params)
 		return "", true
 	}
 	var token string
 	for i, strings := range registrationText {
-		if i >= 2 {
+		if i >= 1 {
 			token = token + strings
 		}
 	}
@@ -648,7 +657,7 @@ func ParseOrder(order string) ([]int, bool) {
 	orders := strings.Split(order, " ")
 	var orderNums []int
 	for j, order := range orders {
-		if j <= 1 {
+		if j == 0 {
 
 		} else {
 			order = strings.Replace(order, ",", "", -1)
