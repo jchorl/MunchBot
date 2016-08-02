@@ -230,8 +230,8 @@ func menuPost(muncherySession string, api *slack.Client, channelID string) error
 	}
 
 	for _, section := range parsed.Menu.MealServices.Dinner.Sections {
-		// nobody orders drinks
-		if section.Name == "Drinks" {
+		// nobody orders these things
+		if section.Name == "Drinks" || section.Name == "Cooking Kits" || section.Name == "Kids" || section.Name == "Extras" {
 			continue
 		}
 
@@ -414,7 +414,6 @@ func checkout(muncherySession string) error {
 		return err
 	}
 
-	log.Printf(scrape.Text(cart))
 	parsed := CartResponse{}
 	err = json.Unmarshal([]byte(scrape.Text(cart)), &parsed)
 	if err != nil {
@@ -496,12 +495,11 @@ func RegisterCronJob(api *slack.Client, db *sql.DB) {
 	c := cron.New()
 	// gonna have to figure out timezones
 	c.AddFunc("0 0 21 * * MON-FRI", func() {
-
 		fmt.Println("Running the cron job")
 
 		users := GetUsers(db, api)
 		for _, user := range users {
-			menuPost(user.MuncherySession, api, user.ChannelID)
+			go menuPost(user.MuncherySession, api, user.ChannelID)
 		}
 	})
 	c.Start()
